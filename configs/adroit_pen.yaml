@@ -1,0 +1,56 @@
+env:
+  name: adroit_pen
+  env_id: AdroitHandPen-v1
+  max_episode_steps: 200
+  deterministic_eval: true
+  success_keys: [success, is_success]
+expert:
+  kind: bc
+  batch_size: 256
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-3
+  hidden_dims: [256, 256]
+  dropout: 0.0
+  epochs: 100
+  grad_clip_norm: 10.0
+  checkpoint_interval: 10
+  ref_q_epochs: 100
+  ref_q_hidden_dims: [256, 256]
+rlpd:
+  batch_size: 256
+  learning_rate: 3.0e-4
+  discount: 0.99
+  weight_decay: 1.0e-3
+  actor_hidden_dims: [256, 256]
+  critic_hidden_dims: [256, 256]
+  critic_ensemble_size: 10
+  tau: 0.005
+  utd_ratio: 5
+  offline_ratio: 0.5
+  entropy_backup: false
+  automatic_entropy_tuning: false
+  target_entropy_scale: -1.0
+  grad_clip_norm: 10.0
+rlif:
+  intervention_mode: value
+  relative_threshold: false
+  beta: 0.95
+  alpha: 0.97
+  delta: 0.0
+  zero_offline_rewards: true
+  takeover_steps: 5
+  rollout_steps: 1000
+  eval_interval: 10000
+  eval_episodes: 10
+  seed: 0
+  total_steps: 1000000
+  warmup_steps: 5000
+  debug_interval_updates: 10000
+  debug_preview_size: 8
+  checkpoint_interval: 50000
+  online_buffer_size: 1000000
+  offline_buffer_size: 1000000
+data:
+  offline_path: data/adroit_pen_expert.npz
+  expert_demo_path: data/adroit_pen_expert.npz
+  output_dir: outputs
