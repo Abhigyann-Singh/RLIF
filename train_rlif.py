@@ -17,7 +17,7 @@ from rlif.data.loaders import resolve_offline_dataset
 from rlif.data.replay_buffer import ReplayBuffer
 from rlif.envs.make_env import make_env
 from rlif.models.actor import GaussianActor
-from rlif.models.critic import QNetwork
+from rlif.models.critic import CriticEnsemble, QNetwork
 from rlif.utils.checkpoint import load_checkpoint, save_checkpoint
 from rlif.utils.config import load_config
 from rlif.utils.logging import MetricsLogger
@@ -50,9 +50,17 @@ def _load_expert_actor(path: Path, observation_dim: int, action_dim: int, hidden
     return actor
 
 
-def _load_reference_q(path: Path, observation_dim: int, action_dim: int, hidden_dims: tuple[int, ...], device: str) -> QNetwork:
-    q = QNetwork(observation_dim, action_dim, hidden_dims).to(device)
+def _load_reference_q(path: Path, observation_dim: int, action_dim: int, hidden_dims: tuple[int, ...], device: str) -> QNetwork | CriticEnsemble:
     checkpoint = load_checkpoint(path, map_location=device)
+    if "critic_state_dict" in checkpoint:
+        ensemble_size = int(checkpoint.get("critic_ensemble_size", 2))
+        critic_hidden_dims = tuple(checkpoint.get("critic_hidden_dims", hidden_dims))
+        critic = CriticEnsemble(observation_dim, action_dim, critic_hidden_dims, ensemble_size).to(device)
+        critic.load_state_dict(checkpoint["critic_state_dict"])
+        critic.eval()
+        return critic
+
+    q = QNetwork(observation_dim, action_dim, hidden_dims).to(device)
     q.load_state_dict(checkpoint["q_state_dict"])
     q.eval()
     return q

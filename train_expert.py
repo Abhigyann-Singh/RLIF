@@ -119,6 +119,7 @@ def main() -> None:
         dataset=dataset,
         observation_dim=env.observation_space.shape[0],
         action_dim=env.action_space.shape[0],
+        expert_kind=config.expert.kind,
         expert_hidden_dims=tuple(config.expert.hidden_dims),
         ref_q_hidden_dims=tuple(config.expert.ref_q_hidden_dims),
         expert_lr=config.expert.learning_rate,
@@ -136,7 +137,8 @@ def main() -> None:
         evaluation_fn=eval_callback,
         eval_interval_epochs=args.eval_interval_epochs,
     )
-    logger.log(config.expert.epochs + config.expert.ref_q_epochs, result.metrics)
+    final_step = config.expert.epochs if config.expert.kind == "offline_rl" else config.expert.epochs + config.expert.ref_q_epochs
+    logger.log(final_step, result.metrics)
     logger.finish()
     print(f"Expert saved to {result.actor_path}")
     if result.reference_q_path is not None:

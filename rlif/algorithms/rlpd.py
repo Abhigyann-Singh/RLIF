@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.optim import AdamW
 
-from rlif.data.replay_buffer import Batch, ReplayBuffer
+from rlif.data.replay_buffer import Batch
 from rlif.models.actor import GaussianActor
 from rlif.models.critic import CriticEnsemble
 
@@ -78,7 +78,7 @@ class RLPDTrainer:
         action, _, _ = self.actor.sample(observation, deterministic=deterministic)
         return action.clamp(-1.0, 1.0)
 
-    def update(self, batch: Batch) -> dict[str, float]:
+    def update_critic(self, batch: Batch) -> dict[str, float]:
         observations = batch.observations
         actions = batch.actions
         rewards = batch.rewards
@@ -103,6 +103,18 @@ class RLPDTrainer:
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip_norm)
         self.critic_optimizer.step()
 
+        return {
+            "critic_loss": float(critic_loss.item()),
+            "critic_updates": 1.0,
+            "q_mean": float(q_values.mean().item()),
+            "q_std": float(q_values.std(unbiased=False).item()),
+            "q_target_mean": float(q_target.mean().item()),
+            "q_target_std": float(q_target.std(unbiased=False).item()),
+        }
+
+    def update_actor(self, batch: Batch) -> dict[str, float]:
+        observations = batch.observations
+
         new_actions, log_prob, _ = self.actor.sample(observations)
         q_new = self.critic.min_q(observations, new_actions)
         if self.entropy_backup:
@@ -121,18 +133,17 @@ class RLPDTrainer:
             alpha_loss.backward()
             self.alpha_optimizer.step()
 
-        self.soft_update_targets()
-
         return {
-            "critic_loss": float(critic_loss.item()),
             "actor_loss": float(actor_loss.item()),
             "alpha_loss": float(alpha_loss.item()),
             "alpha": float(self.alpha.item()),
-            "q_mean": float(q_values.mean().item()),
-            "q_std": float(q_values.std(unbiased=False).item()),
-            "q_target_mean": float(q_target.mean().item()),
-            "q_target_std": float(q_target.std(unbiased=False).item()),
         }
+
+    def update(self, batch: Batch) -> dict[str, float]:
+        metrics = self.update_critic(batch)
+        metrics.update(self.update_actor(batch))
+        self.soft_update_targets()
+        return metrics
 
     def soft_update_targets(self) -> None:
         with torch.no_grad():

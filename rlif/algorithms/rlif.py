@@ -75,6 +75,7 @@ class RLIFRunner:
         self.warmup_steps = warmup_steps
         self.utd_ratio = utd_ratio
         self.batch_size = batch_size
+        # RLPD uses fixed 50/50 online/offline minibatches during online training.
         self.offline_ratio = offline_ratio
         self.device = device
         self.env_name = env_name
@@ -164,23 +165,18 @@ class RLIFRunner:
                 raise ValueError("Cannot sample training data before loading the offline buffer")
             return self.offline_buffer.sample(self.batch_size)
 
-        offline_count = int(round(self.batch_size * self.offline_ratio))
-        offline_count = max(0, min(self.batch_size, offline_count))
-        online_count = self.batch_size - offline_count
-
         if len(self.offline_buffer) == 0:
-            offline_count = 0
-            online_count = self.batch_size
-        elif len(self.online_buffer) == 0:
-            offline_count = self.batch_size
-            online_count = 0
+            raise ValueError("RLPD online updates require a non-empty offline dataset")
+        if self.batch_size % 2 != 0:
+            raise ValueError("RLPD symmetric sampling requires an even batch size")
 
-        batches = []
-        if offline_count > 0:
-            batches.append(self.offline_buffer.sample(offline_count))
-        if online_count > 0:
-            batches.append(self.online_buffer.sample(online_count))
-        return self._merge_batches(batches)
+        half_batch = self.batch_size // 2
+        return self._merge_batches(
+            [
+                self.online_buffer.sample(half_batch),
+                self.offline_buffer.sample(half_batch),
+            ]
+        )
 
     def _apply_updates(
         self,
@@ -198,10 +194,11 @@ class RLIFRunner:
             batch_offline_fraction = float(batch.source.float().mean().item()) if batch.source.numel() > 0 else 0.0
             metrics["batch_offline_fraction"] = batch_offline_fraction
             metrics["batch_online_fraction"] = 1.0 - batch_offline_fraction
+            metrics["utd_step"] = float(i)
             metrics["phase"] = phase
             update_step += 1
             # Compute a monotonic logging step aligned to env steps when available
-            step_to_log = int(base_step + i) if base_step is not None else update_step
+            step_to_log = int(base_step) if phase == "online_rollout" else int(base_step + i)
             if logger is not None:
                 logger.log(step_to_log, metrics)
             if (
@@ -224,6 +221,61 @@ class RLIFRunner:
                     }
                 )
             update_metrics.append(metrics)
+        return update_step, update_metrics
+
+    def _apply_online_utd_updates(
+        self,
+        update_step: int,
+        logger: Any | None,
+        base_step: int,
+    ) -> tuple[int, list[dict[str, float]]]:
+        update_metrics: list[dict[str, float]] = []
+        last_batch: Batch | None = None
+        utd_updates = max(1, int(self.utd_ratio))
+
+        for utd_step in range(utd_updates):
+            batch = self._sample_training_batch(offline_only=False)
+            last_batch = batch
+            metrics = self.learner.update_critic(batch)
+            self.learner.soft_update_targets()
+            batch_offline_fraction = float(batch.source.float().mean().item()) if batch.source.numel() > 0 else 0.0
+            metrics["batch_offline_fraction"] = batch_offline_fraction
+            metrics["batch_online_fraction"] = 1.0 - batch_offline_fraction
+            metrics["utd_step"] = float(utd_step)
+            metrics["actor_updated"] = 0.0
+            metrics["target_updated"] = 1.0
+            metrics["phase"] = "online_rollout"
+            update_step += 1
+
+            if utd_step == utd_updates - 1:
+                actor_metrics = self.learner.update_actor(batch)
+                metrics.update(actor_metrics)
+                metrics["actor_updated"] = 1.0
+
+            if logger is not None:
+                logger.log(int(base_step), metrics)
+            if (
+                self.debug_writer is not None
+                and self.debug_interval_updates > 0
+                and update_step % self.debug_interval_updates == 0
+            ):
+                self.debug_writer.log(
+                    {
+                        "step": int(base_step),
+                        "update_step": update_step,
+                        "global_env_step": int(base_step),
+                        "phase": "online_rollout",
+                        "replay_buffer": {
+                            "offline": self._buffer_snapshot(self.offline_buffer),
+                            "online": self._buffer_snapshot(self.online_buffer),
+                        },
+                        "minibatch": self._batch_snapshot(batch),
+                    }
+                )
+            update_metrics.append(metrics)
+
+        if last_batch is None:
+            raise RuntimeError("Expected at least one online RLPD update")
         return update_step, update_metrics
 
     def collect_step(self, observation: np.ndarray, global_step: int) -> tuple[np.ndarray, bool, dict[str, Any]]:
@@ -287,6 +339,8 @@ class RLIFRunner:
     ) -> list[dict[str, float]]:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Online RLPD updates are performed immediately after each environment step.
+        _ = (round_train_epochs, round_train_steps_per_epoch)
 
         global_env_step = 0
         update_step = 0
@@ -301,15 +355,15 @@ class RLIFRunner:
 
         try:
             if start_round == 0 and pretrain_epochs > 0 and pretrain_train_steps_per_epoch > 0:
-                    for epoch in range(pretrain_epochs):
-                        update_step, epoch_metrics = self._apply_updates(
-                            pretrain_train_steps_per_epoch,
-                            update_step,
-                            logger,
-                            phase="pretrain",
-                            offline_only=True,
-                            base_step=global_env_step,
-                        )
+                for epoch in range(pretrain_epochs):
+                    update_step, epoch_metrics = self._apply_updates(
+                        pretrain_train_steps_per_epoch,
+                        update_step,
+                        logger,
+                        phase="pretrain",
+                        offline_only=True,
+                        base_step=global_env_step,
+                    )
                     if epoch_metrics:
                         metrics_history.append({**epoch_metrics[-1], "epoch": float(epoch), "stage": 0.0})
 
@@ -329,14 +383,11 @@ class RLIFRunner:
                     interventions += int(info["intervention"])
                     takeover_steps += int(info["takeover"])
 
-                    if len(self.offline_buffer) > 0 or len(self.online_buffer) > 0:
-                        update_step, _ = self._apply_updates(
-                            self.utd_ratio,
-                            update_step,
-                            logger,
-                            phase="online_rollout",
-                            base_step=global_env_step,
-                        )
+                    update_step, _ = self._apply_online_utd_updates(
+                        update_step,
+                        logger,
+                        base_step=global_env_step,
+                    )
 
                     if done:
                         episode_metrics = EpisodeMetrics(
@@ -362,18 +413,6 @@ class RLIFRunner:
                         interventions = 0
                         takeover_steps = 0
                         episodes_collected += 1
-
-                for epoch in range(round_train_epochs):
-                    update_step, epoch_metrics = self._apply_updates(
-                        round_train_steps_per_epoch,
-                        update_step,
-                        logger,
-                        phase="round_train",
-                        base_step=global_env_step,
-                    )
-                    if epoch_metrics:
-                        epoch_metrics[-1]["round_index"] = float(round_index)
-                        metrics_history.append(epoch_metrics[-1])
 
                 if eval_interval_rounds > 0 and (round_index + 1) % eval_interval_rounds == 0:
                     eval_metrics = self.evaluate(eval_episodes)

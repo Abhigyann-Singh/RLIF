@@ -4,7 +4,7 @@ env:
   max_episode_steps: 1000
   deterministic_eval: true
 expert:
-  kind: bc
+  kind: offline_rl
   batch_size: 256
   learning_rate: 3.0e-4
   weight_decay: 1.0e-3
