@@ -116,7 +116,7 @@ class RLPDTrainer:
         observations = batch.observations
 
         new_actions, log_prob, _ = self.actor.sample(observations)
-        q_new = self.critic.min_q(observations, new_actions)
+        q_new = self.critic.mean_q(observations, new_actions)
         if self.entropy_backup:
             actor_loss = (self.alpha.detach() * log_prob - q_new).mean()
         else:

@@ -10,7 +10,7 @@ expert:
   weight_decay: 1.0e-3
   hidden_dims: [256, 256]
   dropout: 0.0
-  epochs: 300
+  epochs: 200
   grad_clip_norm: 10.0
   checkpoint_interval: 10
   ref_q_epochs: 300
@@ -27,19 +27,19 @@ rlpd:
   tau: 0.005
   utd_ratio: 1
   offline_ratio: 0.5
-  entropy_backup: true
-  automatic_entropy_tuning: true
+  entropy_backup: false
+  automatic_entropy_tuning: false
   target_entropy_scale: -1.0
-  grad_clip_norm: 10.0
+  grad_clip_norm: 1.0
 rlif:
   intervention_mode: value
   relative_threshold: false
   beta: 0.95
-  alpha: 0.97
-  delta: 0.0
+  alpha: 0.997
+  delta: 2
   zero_offline_rewards: true
-  takeover_steps: 5
-  rounds: 100
+  takeover_steps: 4
+  rounds: 200
   trajectories_per_round: 5
   pretrain_epochs: 200
   pretrain_train_steps_per_epoch: 300
@@ -48,7 +48,7 @@ rlif:
   eval_interval_rounds: 1
   checkpoint_interval_rounds: 1
   eval_episodes: 10
-  seed: 0
+  seed: 3
   warmup_steps: 0
   debug_interval_updates: 10000
   debug_preview_size: 8
